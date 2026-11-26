@@ -1,0 +1,9 @@
+# The build context gets only what the image copies. Everything else stays out,
+# above all the full database (data/upside.db), raw pulls, private data folders and secrets.
+*
+!app/
+!scoring/
+!requirements-api.txt
+!data/public.db
+**/__pycache__
+**/*.pyc
