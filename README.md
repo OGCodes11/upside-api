@@ -1,5 +1,7 @@
 # Upside
 
+**Live API:** [upside-api-5nat.onrender.com/docs](https://upside-api-5nat.onrender.com/docs) — interactive docs; try any endpoint in the browser. It runs on a free plan that sleeps when idle, so the first request after a quiet spell takes about a minute.
+
 ## The result first: PSI does not beat draft slot
 
 Upside scores college prospects with a Prospect Strength Index (PSI). Before trusting it, I tested it: did PSI rank the 2012–2021 draft classes by their Year-3 NBA minutes better than the draft order did?
@@ -38,14 +40,14 @@ Upside is a basketball player-evaluation service, built as a FastAPI REST API ov
 
 Every path starts with `/v1`. List endpoints are paged with `limit` (1–100, default 25) and `offset`, and return `{items, total, limit, offset}`. Interactive docs are at `/docs` while the server is running.
 
-The examples assume the server is running at `http://127.0.0.1:8000`.
+The examples call the live API. To call a local server instead, replace `https://upside-api-5nat.onrender.com` with `http://127.0.0.1:8000`.
 
 ### `GET /v1/prospects`
 
 Prospects with their PSI, rank within the draft class, and flags. Filter by `draft_year`. Prospects who can't be scored (no Division I season, or undrafted) are still listed, with `psi: null`.
 
 ```bash
-curl "http://127.0.0.1:8000/v1/prospects?draft_year=2017&limit=2"
+curl "https://upside-api-5nat.onrender.com/v1/prospects?draft_year=2017&limit=2"
 ```
 
 ```json
@@ -75,7 +77,7 @@ The full breakdown for one prospect:
 - and the tournament split.
 
 ```bash
-curl "http://127.0.0.1:8000/v1/prospects/543/psi"
+curl "https://upside-api-5nat.onrender.com/v1/prospects/543/psi"
 ```
 
 ```json
@@ -110,7 +112,7 @@ The endpoint returns 404 for an unknown id, and 404 "No PSI for this prospect" f
 Year-over-year changes between an NBA player's seasons, in per-game minutes, points, rebounds and assists, plus his average change per season. Player ids are NBA.com ids. The response contains no raw season lines.
 
 ```bash
-curl "http://127.0.0.1:8000/v1/players/1628369/progression?limit=1"
+curl "https://upside-api-5nat.onrender.com/v1/players/1628369/progression?limit=1"
 ```
 
 ```json

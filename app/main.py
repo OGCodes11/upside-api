@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Generic, TypeVar
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Security
+from fastapi.responses import RedirectResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
@@ -26,7 +27,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Upside API", version="0.3", lifespan=lifespan)
+app = FastAPI(title="Upside API", version="0.4", lifespan=lifespan)
+
+
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    """The bare URL opens the interactive docs instead of a 404."""
+    return RedirectResponse("/docs")
 
 T = TypeVar("T")
 SEASON_PATTERN = r"^\d{4}-\d{2}$"

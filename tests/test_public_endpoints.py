@@ -150,3 +150,13 @@ def test_build_prospect_scores_from_college_data(tmp_path):
     assert (row["intangibles"], row["team_fit"]) == (50.0, 50.0)
     assert row["postseason_games"] is None  # no per-game data loaded for that season
     conn.close()
+
+
+# --- the bare URL ---
+
+
+def test_root_redirects_to_docs(client):
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "/docs"
+    assert "/" not in client.get("/openapi.json").json()["paths"]  # kept out of the docs
