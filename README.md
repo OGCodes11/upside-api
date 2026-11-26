@@ -212,6 +212,10 @@ python -m scoring.backtest
 
 Thanks to both, and to the nba_api maintainers. Neither source's raw data is included in this repository or served by the public API. NBA.com's terms don't allow redistributing its data, and CBBD's terms don't allow republishing its raw data. Only derived scores, ranks, flags and changes are served.
 
+## License
+
+The code is released under the [MIT License](LICENSE). The license covers the code only: the data it pulls stays under each source's own terms (see above).
+
 ## Unofficial
 
 Upside is an independent project. It is not affiliated with, endorsed by or connected to the NBA, the NCAA, NBA.com or CollegeBasketballData.com. The data is unofficial and may contain errors or gaps; known gaps are flagged, not filled. The scores are an experiment, and the result above says how well they did. Don't use them to make decisions about real players.
