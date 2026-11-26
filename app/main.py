@@ -1,12 +1,14 @@
 import json
 import os
+import re
 import secrets
 import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Generic, TypeVar
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Security
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, Security
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import RedirectResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
@@ -27,7 +29,72 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Upside API", version="0.4", lifespan=lifespan)
+DESCRIPTION = """
+Scores for NBA draft prospects and season-to-season changes for NBA players. **Derived data only**:
+scores, ranks, flags and year-over-year changes. No raw stat lines from the sources.
+
+**Read the scores with this result in mind.** In a pre-registered backtest of the 2012–2021 draft classes,
+PSI ranked players by Year-3 NBA minutes far worse than draft slot did: rank correlation **0.15–0.18**
+for PSI against **0.58–0.62** for draft slot.
+[The one-page result](https://github.com/OGCodes11/upside-api/blob/main/docs/PHASE2_RESULT.md) ·
+[Source code](https://github.com/OGCodes11/upside-api)
+
+**How to use this page:** open an endpoint, fill in the fields, and press **Execute**.
+A good first try: **List prospects** with `draft_year` 2017, then **PSI breakdown** with `prospect_id` 543.
+
+The live service runs on a free plan that sleeps when idle, so the first request after a quiet spell
+can take about a minute. Unofficial: not affiliated with the NBA, the NCAA, NBA.com or CollegeBasketballData.com.
+"""
+
+TAGS = [
+    {"name": "Prospects", "description": "Draft prospects and their PSI (Prospect Strength Index) scores."},
+    {"name": "Players", "description": "Year-over-year changes for NBA players."},
+    {"name": "Raw data (local only)",
+     "description": "Raw NBA season lines for local analysis. Hidden and locked on the public service."},
+]
+RAW_TAG = "Raw data (local only)"
+
+app = FastAPI(
+    title="Upside API",
+    version="0.5",
+    description=DESCRIPTION,
+    openapi_tags=TAGS,
+    lifespan=lifespan,
+    swagger_ui_parameters={
+        "tryItOutEnabled": True,  # fields are editable without clicking "Try it out" first
+        "defaultModelsExpandDepth": -1,  # hide the "Schemas" list at the bottom
+        "docExpansion": "list",
+        "displayRequestDuration": True,
+    },
+)
+
+LIMIT = Query(25, ge=1, le=100, description="Results per page, 1 to 100")
+OFFSET = Query(0, ge=0, description="Results to skip. With limit=25: 0 for page 1, 25 for page 2, and so on")
+NOT_FOUND = {404: {"description": "No record with that id"}}
+
+
+def openapi_schema() -> dict:
+    """The docs schema. In public mode it leaves out the raw endpoints, which are locked there anyway."""
+    schema = get_openapi(title=app.title, version=app.version, description=app.description,
+                         tags=app.openapi_tags, routes=app.routes)
+    if public_mode():
+        schema["tags"] = [t for t in schema.get("tags", []) if t["name"] != RAW_TAG]
+        schema["paths"] = {path: ops for path, ops in schema["paths"].items()
+                           if not any(RAW_TAG in op.get("tags", []) for op in ops.values())}
+        components = schema.get("components", {})
+        components.pop("securitySchemes", None)  # no "Authorize" button for endpoints that aren't shown
+        text = json.dumps(schema["paths"])
+        used, pending = set(), {m for m in re.findall(r"#/components/schemas/([\w-]+)", text)}
+        while pending:  # keep only the models the remaining endpoints use
+            name = pending.pop()
+            if name not in used:
+                used.add(name)
+                pending |= set(re.findall(r"#/components/schemas/([\w-]+)", json.dumps(components["schemas"][name])))
+        components["schemas"] = {k: v for k, v in components.get("schemas", {}).items() if k in used}
+    return schema
+
+
+app.openapi = openapi_schema
 
 
 @app.get("/", include_in_schema=False)
@@ -203,12 +270,13 @@ PLAYER_SEASON_FILTER = """
 """
 
 
-@app.get("/v1/players", response_model=Page[PlayerSeason], dependencies=RAW_ACCESS)
+@app.get("/v1/players", response_model=Page[PlayerSeason], dependencies=RAW_ACCESS, tags=[RAW_TAG],
+         summary="List NBA season lines")
 def list_players(
     season: str | None = Query(None, pattern=SEASON_PATTERN, description="Defaults to the latest season"),
     team: str | None = Query(None, description="Team abbreviation, e.g. GSW"),
-    limit: int = Query(25, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    limit: int = LIMIT,
+    offset: int = OFFSET,
     db: sqlite3.Connection = Depends(require_raw_tables),
 ):
     if season is None:
@@ -229,11 +297,12 @@ def list_players(
     return Page(items=[PlayerSeason(**dict(r)) for r in rows], total=total, limit=limit, offset=offset)
 
 
-@app.get("/v1/players/{player_id}/seasons", response_model=Page[SeasonLine], dependencies=RAW_ACCESS)
+@app.get("/v1/players/{player_id}/seasons", response_model=Page[SeasonLine], dependencies=RAW_ACCESS,
+         tags=[RAW_TAG], summary="One player's NBA season lines", responses=NOT_FOUND)
 def list_player_seasons(
-    player_id: int,
-    limit: int = Query(25, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    player_id: int = Path(description="NBA.com player id"),
+    limit: int = LIMIT,
+    offset: int = OFFSET,
     db: sqlite3.Connection = Depends(require_raw_tables),
 ):
     if db.execute("SELECT 1 FROM players WHERE id = ?", (player_id,)).fetchone() is None:
@@ -254,11 +323,16 @@ def list_player_seasons(
     return Page(items=[SeasonLine(**dict(r)) for r in rows], total=total, limit=limit, offset=offset)
 
 
-@app.get("/v1/players/{player_id}/progression", response_model=Progression)
+@app.get("/v1/players/{player_id}/progression", response_model=Progression, tags=["Players"],
+         summary="Season-to-season changes",
+         description="How a player's per-game numbers changed from each NBA season to his next one, plus "
+                     "`trend`: his average change per season across all of them. No raw season lines.\n\n"
+                     "`small_sample` marks a change where either season had fewer than 20 games. "
+                     "`seasons_apart` is more than 1 when he missed a season in between.", responses=NOT_FOUND)
 def player_progression(
-    player_id: int,
-    limit: int = Query(25, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    player_id: int = Path(description="NBA.com player id, e.g. 1628369 (Jayson Tatum)"),
+    limit: int = LIMIT,
+    offset: int = OFFSET,
     db: sqlite3.Connection = Depends(get_db),
 ):
     if db.execute("SELECT 1 FROM players WHERE id = ?", (player_id,)).fetchone() is None:
@@ -279,11 +353,18 @@ def player_progression(
     )
 
 
-@app.get("/v1/prospects", response_model=Page[ProspectSummary])
+@app.get("/v1/prospects", response_model=Page[ProspectSummary], tags=["Prospects"], summary="List prospects",
+         description="Every draft prospect with his PSI (0-100), his rank within his draft class (1 = highest) "
+                     "and the data-quality flags. Sorted by class, then PSI. Prospects PSI can't score (no "
+                     "Division I season, or undrafted) are listed with `psi: null`.\n\n"
+                     "**Flags:** `missing_box_flag`: over 10% of his teams' pre-draft games have no box score. "
+                     "`small_postseason_sample`: fewer than 5 postseason games. `college_link`: how he was "
+                     "matched to his college record.")
 def list_prospects(
-    draft_year: int | None = Query(None, ge=2000, le=2100),
-    limit: int = Query(25, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    draft_year: int | None = Query(None, ge=2000, le=2100,
+                                   description="Only this draft class, e.g. 2017. Leave empty for every class"),
+    limit: int = LIMIT,
+    offset: int = OFFSET,
     db: sqlite3.Connection = Depends(get_db),
 ):
     where, params = ("WHERE p.draft_year = :year", {"year": draft_year}) if draft_year else ("", {})
@@ -299,8 +380,17 @@ def list_prospects(
     return Page(items=[ProspectSummary(**dict(r)) for r in rows], total=total, limit=limit, offset=offset)
 
 
-@app.get("/v1/prospects/{prospect_id}/psi", response_model=ProspectPSI)
-def prospect_psi(prospect_id: int, db: sqlite3.Connection = Depends(get_db)):
+@app.get("/v1/prospects/{prospect_id}/psi", response_model=ProspectPSI, tags=["Prospects"],
+         summary="PSI breakdown",
+         description="The six PSI components with their weights and scores, the six skill scores, the inputs "
+                     "the scorer was missing, and the flags. **Intangibles and Team Fit are hand-entered by "
+                     "design, so in v1 they are a neutral 50 for everyone**, and say so in `status`.\n\n"
+                     "`tournament_split` compares his regular season with his postseason. It is kept apart from "
+                     "PSI on purpose and never changes the score.", responses={404: {"description": "Unknown prospect, or one with no PSI"}})
+def prospect_psi(
+    prospect_id: int = Path(description="Prospect id from List prospects, e.g. 543"),
+    db: sqlite3.Connection = Depends(get_db),
+):
     p = db.execute("SELECT id, name, draft_year, missing_box_flag, college_link FROM prospects WHERE id = ?",
                    (prospect_id,)).fetchone()
     if p is None:
@@ -334,8 +424,12 @@ def prospect_psi(prospect_id: int, db: sqlite3.Connection = Depends(get_db)):
     )
 
 
-@app.get("/v1/players/{player_id}", response_model=PlayerProfile, dependencies=RAW_ACCESS)
-def get_player(player_id: int, db: sqlite3.Connection = Depends(require_raw_tables)):
+@app.get("/v1/players/{player_id}", response_model=PlayerProfile, dependencies=RAW_ACCESS, tags=[RAW_TAG],
+         summary="One player's career summary", responses=NOT_FOUND)
+def get_player(
+    player_id: int = Path(description="NBA.com player id"),
+    db: sqlite3.Connection = Depends(require_raw_tables),
+):
     row = db.execute(
         """
         SELECT p.id, p.name,
